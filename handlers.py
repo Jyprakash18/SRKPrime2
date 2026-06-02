@@ -11,10 +11,10 @@ from aiogram.types import CallbackQuery, ChatJoinRequest, Message, User as TgUse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from .config import Settings
-from .keyboards import approval_keyboard, join_keyboard, plans_keyboard
-from .models import InviteLink, PaymentRequest, User
-from .services import as_utc, create_invite_for_user, new_expiry, utcnow
+from config import Settings
+from keyboards import approval_keyboard, join_keyboard, plans_keyboard
+from models import InviteLink, PaymentRequest, User
+from services import as_utc, create_invite_for_user, new_expiry, utcnow
 
 logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
