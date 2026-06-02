@@ -1,6 +1,6 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from .config import Plan
+from config import Plan
 
 
 def plans_keyboard(plans: dict[str, Plan]) -> InlineKeyboardMarkup:
