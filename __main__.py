@@ -1,4 +1,4 @@
-from .main import create_app
+from main import create_app
 import os
 from aiohttp import web
 
