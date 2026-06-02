@@ -9,8 +9,8 @@ from dateutil.relativedelta import relativedelta
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from .config import Plan, Settings
-from .models import InviteLink, User
+from config import Plan, Settings
+from models import InviteLink, User
 
 logger = logging.getLogger(__name__)
 
