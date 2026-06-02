@@ -11,9 +11,9 @@ from aiogram.types import BotCommand
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
 from config import Settings
-from .db import build_database, init_db
-from .handlers import make_router
-from .services import expire_due_users
+from db import build_database, init_db
+from handlers import make_router
+from services import expire_due_users
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
