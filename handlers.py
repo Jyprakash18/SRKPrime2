@@ -51,8 +51,8 @@ def make_router(settings: Settings, sessions: async_sessionmaker[AsyncSession]) 
         async with sessions() as session:
             await upsert_user(session, message.from_user)
             await session.commit()
-        await message.answer(
-            "Welcome! Premium plan choose karein:",
+        await message.answer(Welcome
+            "Welcome! Choose your premium plan, complete the payment, and upload your payment screenshot. After admin approval, you will get access to the premium channel and group:",
             reply_markup=plans_keyboard(settings.plans),
         )
 
@@ -73,8 +73,8 @@ def make_router(settings: Settings, sessions: async_sessionmaker[AsyncSession]) 
         text = (
             f"Plan: {plan.name}\n"
             f"Amount: {plan.amount}\n\n"
-            "Once your payment is completed, kindly upload the payment screenshot here for verification."
-            "It will be sent to the admin for verification."
+            "Thank You! Once your payment is completed, kindly upload the payment screenshot here for verification."
+            "It will be sent to the admin for verification Up to 12hour"
         )
         if callback.message:
             await callback.message.answer(text)
