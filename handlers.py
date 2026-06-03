@@ -170,7 +170,7 @@ def make_router(settings: Settings, sessions: async_sessionmaker[AsyncSession]) 
         if sent_to_admin:
             await message.answer("Screenshot received. Admin approval ka wait karein.")
         else:
-            await message.answer("Screenshot saved, lekin admin notification send nahi hui. Please contact admin @SRKSupports.)
+            await message.answer("Screenshot saved, lekin admin notification send nahi hui. Please contact admin @SRKSupports.")
 
     @router.callback_query(F.data.startswith("pay:"))
     async def payment_decision(callback: CallbackQuery, bot: Bot) -> None:
