@@ -73,8 +73,8 @@ def make_router(settings: Settings, sessions: async_sessionmaker[AsyncSession]) 
         text = (
             f"Plan: {plan.name}\n"
             f"Amount: {plan.amount}\n\n"
-            "Payment already complete karne ke baad payment screenshot yahan upload karein. "
-            "Screenshot admin verification ke liye bheja jayega."
+            "Once your payment is completed, kindly upload the payment screenshot here for verification."
+            "It will be sent to the admin for verification."
         )
         if callback.message:
             await callback.message.answer(text)
@@ -170,7 +170,7 @@ def make_router(settings: Settings, sessions: async_sessionmaker[AsyncSession]) 
         if sent_to_admin:
             await message.answer("Screenshot received. Admin approval ka wait karein.")
         else:
-            await message.answer("Screenshot saved, lekin admin notification send nahi hui. Please contact admin.")
+            await message.answer("Screenshot saved, lekin admin notification send nahi hui. Please contact admin @SRKSupports.)
 
     @router.callback_query(F.data.startswith("pay:"))
     async def payment_decision(callback: CallbackQuery, bot: Bot) -> None:
@@ -239,7 +239,7 @@ def make_router(settings: Settings, sessions: async_sessionmaker[AsyncSession]) 
 
         if action == "reject":
             try:
-                await bot.send_message(rejected_user_id, "Payment rejected, please contact admin.")
+                await bot.send_message(rejected_user_id, "Payment rejected, please contact admin @SRKSupports.")
             except TelegramAPIError:
                 pass
             await _mark_admin_panel(callback, "❌ Rejected")
@@ -441,7 +441,7 @@ def make_router(settings: Settings, sessions: async_sessionmaker[AsyncSession]) 
             user.premium_expires_at = utcnow()
             await session.commit()
         try:
-            await bot.send_message(target_id, "Your premium access has been removed. Please contact admin.")
+            await bot.send_message(target_id, "Your premium access has been removed. Please contact admin @SRKSupports.")
         except TelegramAPIError:
             pass
         await message.answer(f"Premium removed for {target_id}.")
