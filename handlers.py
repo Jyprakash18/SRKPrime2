@@ -52,7 +52,7 @@ def make_router(settings: Settings, sessions: async_sessionmaker[AsyncSession]) 
             await upsert_user(session, message.from_user)
             await session.commit()
         await message.answer(Welcome
-            "Welcome! Choose your premium plan, complete the payment, and upload your payment screenshot. After admin approval, you will get access to the premium channel and group:",
+            "Welcome! Choose your premium plan, complete the payment, and upload your payment screenshot. After admin approval, you will get access to the premium channel and group:"
             reply_markup=plans_keyboard(settings.plans),
         )
 
