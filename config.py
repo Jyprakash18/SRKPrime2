@@ -82,11 +82,21 @@ def _required(name: str) -> str:
     return value
 
 
-def _parse_chat_id(value: str) -> int | str:
-    value = value.strip()
-    try:
-        return int(value)
-    except ValueError:
-        if value.startswith("@"):
-            return value
-        raise ValueError("PREMIUM_CHAT_ID must be a numeric chat ID or @channelusername")
+def _parse_chat_id(value):
+    if not value:
+        return []
+    
+    # Split the string by commas if there are multiple IDs
+    id_list = [item.strip() for item in value.split(',')]
+    parsed_ids = []
+    
+    for item in id_list:
+        try:
+            parsed_ids.append(int(item))
+        except ValueError:
+            if item.startswith('@'):
+                parsed_ids.append(item)
+            else:
+                raise ValueError("PREMIUM_CHAT_ID must contain numeric chat IDs or @channelusernames separated by commas")
+                
+    return parsed_ids
