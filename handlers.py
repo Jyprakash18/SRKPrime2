@@ -218,7 +218,6 @@ def make_router(settings: Settings, sessions: async_sessionmaker[AsyncSession]) 
                         return
                     _, expires_at = new_expiry(user.premium_expires_at if user.premium_status == "active" else None, plan)
                     
-                    # Loop for generating multiple invite links (Channel and Group)
                     chat_ids = settings.premium_chat_id if isinstance(settings.premium_chat_id, list) else [settings.premium_chat_id]
                     for cid in chat_ids:
                         try:
@@ -230,7 +229,6 @@ def make_router(settings: Settings, sessions: async_sessionmaker[AsyncSession]) 
                             )
                             db_invite = InviteLink(
                                 user_id=user.telegram_id,
-                                payment_id=payment.id,
                                 invite_link=tg_invite.invite_link,
                                 expires_at=expire_date,
                                 used=False,
@@ -271,7 +269,6 @@ def make_router(settings: Settings, sessions: async_sessionmaker[AsyncSession]) 
 
         assert approved_user_id is not None and expires_at is not None
         
-        # Generating dynamic multi-buttons markup
         buttons = []
         for cid, link in invite_links:
             try:
@@ -333,7 +330,6 @@ def make_router(settings: Settings, sessions: async_sessionmaker[AsyncSession]) 
                 and user_expiry > now
             )
             if valid:
-                # Dynamic approval depending on which chat the request comes from
                 await bot.approve_chat_join_request(request.chat.id, request.from_user.id)
                 try:
                     await bot.revoke_chat_invite_link(request.chat.id, invite.invite_link)
@@ -402,7 +398,7 @@ def make_router(settings: Settings, sessions: async_sessionmaker[AsyncSession]) 
             f"Payments rejected: {rejected}"
         )
 
-        @router.message(Command("addpremium"))
+    @router.message(Command("addpremium"))
     async def add_premium(message: Message, command: CommandObject, bot: Bot) -> None:
         if not message.from_user or not is_admin(message.from_user.id):
             return
