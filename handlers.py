@@ -439,7 +439,7 @@ def make_router(settings: Settings, sessions: async_sessionmaker[AsyncSession]) 
             for cid in chat_ids:
                 try:
                     expire_date = utcnow() + timedelta(minutes=settings.invite_valid_minutes)
-                                        tg_invite = await bot.create_chat_invite_link(chat_id=cid, creates_join_request=True, expire_date=expire_date)
+                     tg_invite = await bot.create_chat_invite_link(chat_id=cid, creates_join_request=True, expire_date=expire_date)
                     db_invite = InviteLink(
                         user_id=target_id,
                         invite_link=tg_invite.invite_link,
@@ -447,6 +447,7 @@ def make_router(settings: Settings, sessions: async_sessionmaker[AsyncSession]) 
                         used=False,
                         revoked=False
                     )
+
                     session.add(db_invite)
                     invite_links.append((cid, tg_invite.invite_link))
                 except TelegramAPIError as exc:
