@@ -86,7 +86,7 @@ def _parse_chat_id(value):
     if not value:
         return []
     
-    # Split the string by commas if there are multiple IDs
+    # Comma se IDs ko alag karne ke liye
     id_list = [item.strip() for item in value.split(',')]
     parsed_ids = []
     
