@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import Command, CommandObject, CommandStart
-from aiogram.types import CallbackQuery, ChatJoinRequest, Message, User as TgUser
+from aiogram.types import CallbackQuery, ChatJoinRequest, Message, User as TgUser, InlineKeyboardMarkup, InlineKeyboardButton
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -186,9 +186,10 @@ def make_router(settings: Settings, sessions: async_sessionmaker[AsyncSession]) 
             await callback.answer("Invalid action.", show_alert=True)
             return
 
-        invite: InviteLink | None = None
         approved_user_id: int | None = None
         expires_at = None
+        invite_links = []
+        
         async with sessions() as session:
             async with session.begin():
                 payment = await session.scalar(
@@ -216,12 +217,34 @@ def make_router(settings: Settings, sessions: async_sessionmaker[AsyncSession]) 
                         await callback.answer("Plan configuration missing.", show_alert=True)
                         return
                     _, expires_at = new_expiry(user.premium_expires_at if user.premium_status == "active" else None, plan)
-                    try:
-                        invite = await create_invite_for_user(bot, settings, user.telegram_id, payment.id, session)
-                    except TelegramAPIError as exc:
-                        logger.error("Unable to create access invite for payment %s: %s", payment.id, exc)
-                        await callback.answer("Invite create failed. Bot admin permissions check karein.", show_alert=True)
+                    
+                    # Loop for generating multiple invite links (Channel and Group)
+                    chat_ids = settings.premium_chat_id if isinstance(settings.premium_chat_id, list) else [settings.premium_chat_id]
+                    for cid in chat_ids:
+                        try:
+                            expire_date = utcnow() + timedelta(minutes=settings.invite_valid_minutes)
+                            tg_invite = await bot.create_chat_invite_link(
+                                chat_id=cid,
+                                creates_join_request=True,
+                                expire_date=expire_date
+                            )
+                            db_invite = InviteLink(
+                                user_id=user.telegram_id,
+                                payment_id=payment.id,
+                                invite_link=tg_invite.invite_link,
+                                expires_at=expire_date,
+                                used=False,
+                                revoked=False
+                            )
+                            session.add(db_invite)
+                            invite_links.append((cid, tg_invite.invite_link))
+                        except TelegramAPIError as exc:
+                            logger.error("Unable to create access invite for chat %s: %s", cid, exc)
+                    
+                    if not invite_links:
+                        await callback.answer("Invite links generation failed. Bot admin permissions check karein.", show_alert=True)
                         return
+
                     payment.status = "approved"
                     payment.admin_id = callback.from_user.id
                     payment.processed_at = utcnow()
@@ -246,14 +269,26 @@ def make_router(settings: Settings, sessions: async_sessionmaker[AsyncSession]) 
             await callback.answer("Rejected")
             return
 
-        assert invite is not None and approved_user_id is not None and expires_at is not None
+        assert approved_user_id is not None and expires_at is not None
+        
+        # Generating dynamic multi-buttons markup
+        buttons = []
+        for cid, link in invite_links:
+            try:
+                chat_info = await bot.get_chat(cid)
+                title = chat_info.title
+            except Exception:
+                title = "Premium Chat"
+            buttons.append([InlineKeyboardButton(text=f"Join {title}", url=link)])
+        custom_join_markup = InlineKeyboardMarkup(inline_keyboard=buttons)
+
         try:
             await bot.send_message(
                 approved_user_id,
                 "Your premium is activated.\n"
                 f"Expiry: {expiry_text(expires_at)}\n\n"
-                f"Join link {settings.invite_valid_minutes} minutes tak valid hai. Button tap karke join request bhejein.",
-                reply_markup=join_keyboard(invite.invite_link),
+                f"Join links {settings.invite_valid_minutes} minutes tak valid hain. Buttons par tap karke join requests bhejein.",
+                reply_markup=custom_join_markup,
             )
         except TelegramAPIError as exc:
             logger.warning("Premium approved but invitation could not be delivered to %s: %s", approved_user_id, exc)
@@ -298,9 +333,10 @@ def make_router(settings: Settings, sessions: async_sessionmaker[AsyncSession]) 
                 and user_expiry > now
             )
             if valid:
-                await bot.approve_chat_join_request(settings.premium_chat_id, request.from_user.id)
+                # Dynamic approval depending on which chat the request comes from
+                await bot.approve_chat_join_request(request.chat.id, request.from_user.id)
                 try:
-                    await bot.revoke_chat_invite_link(settings.premium_chat_id, invite.invite_link)
+                    await bot.revoke_chat_invite_link(request.chat.id, invite.invite_link)
                 except TelegramBadRequest:
                     pass
                 invite.used = True
@@ -310,7 +346,7 @@ def make_router(settings: Settings, sessions: async_sessionmaker[AsyncSession]) 
                 await session.commit()
                 await bot.send_message(request.from_user.id, "Premium channel/group access approved.")
                 return
-            await bot.decline_chat_join_request(settings.premium_chat_id, request.from_user.id)
+            await bot.decline_chat_join_request(request.chat.id, request.from_user.id)
             await session.commit()
 
     @router.message(Command("users"))
@@ -381,6 +417,8 @@ def make_router(settings: Settings, sessions: async_sessionmaker[AsyncSession]) 
         except ValueError:
             await message.answer("User ID aur days valid positive numbers hone chahiye.")
             return
+            
+        invite_links = []
         async with sessions() as session:
             user = await session.get(User, target_id)
             if user is None:
@@ -396,16 +434,45 @@ def make_router(settings: Settings, sessions: async_sessionmaker[AsyncSession]) 
             user.premium_started_at = now
             user.premium_expires_at = base + timedelta(days=days)
             user.channel_access_status = "invite_sent"
-            invite = await create_invite_for_user(bot, settings, target_id, None, session)
+            
+            chat_ids = settings.premium_chat_id if isinstance(settings.premium_chat_id, list) else [settings.premium_chat_id]
+            for cid in chat_ids:
+                try:
+                    expire_date = utcnow() + timedelta(minutes=settings.invite_valid_minutes)
+                    tg_invite = await bot.create_chat_invite_link(chat_id=cid, creates_join_request=True, expire_date=expire_date)
+                    db_invite = InviteLink(
+                        user_id=target_id,
+                        payment_id=None,
+                        invite_link=tg_invite.invite_link,
+                        expires_at=expire_date,
+                        used=False,
+                        revoked=False
+                    )
+                    session.add(db_invite)
+                    invite_links.append((cid, tg_invite.invite_link))
+                except TelegramAPIError as exc:
+                    logger.error("Manual add: Unable to create invite for chat %s: %s", cid, exc)
+                    
             expiry = user.premium_expires_at
             await session.commit()
+            
+        buttons = []
+        for cid, link in invite_links:
+            try:
+                chat_info = await bot.get_chat(cid)
+                title = chat_info.title
+            except Exception:
+                title = "Premium Chat"
+            buttons.append([InlineKeyboardButton(text=f"Join {title}", url=link)])
+        custom_join_markup = InlineKeyboardMarkup(inline_keyboard=buttons)
+        
         try:
             await bot.send_message(
                 target_id,
                 "Your premium is activated.\n"
                 f"Expiry: {expiry_text(expiry)}\n\n"
-                f"Join link {settings.invite_valid_minutes} minutes tak valid hai.",
-                reply_markup=join_keyboard(invite.invite_link),
+                f"Join links {settings.invite_valid_minutes} minutes tak valid hain. Buttons par tap karke join requests bhejein.",
+                reply_markup=custom_join_markup,
             )
             await message.answer(f"Premium added for {target_id} until {expiry_text(expiry)}.")
         except TelegramForbiddenError:
@@ -425,16 +492,22 @@ def make_router(settings: Settings, sessions: async_sessionmaker[AsyncSession]) 
             if user is None:
                 await message.answer("User not found.")
                 return
-            try:
-                await bot.ban_chat_member(settings.premium_chat_id, target_id)
-            except TelegramAPIError as exc:
-                logger.warning("Unable to remove %s: %s", target_id, exc)
+                
+            chat_ids = settings.premium_chat_id if isinstance(settings.premium_chat_id, list) else [settings.premium_chat_id]
+            for cid in chat_ids:
+                try:
+                    await bot.ban_chat_member(cid, target_id)
+                except TelegramAPIError as exc:
+                    logger.warning("Unable to remove %s from chat %s: %s", target_id, cid, exc)
+                    
             links = (await session.execute(select(InviteLink).where(InviteLink.user_id == target_id, InviteLink.revoked.is_(False)))).scalars().all()
             for invite in links:
-                try:
-                    await bot.revoke_chat_invite_link(settings.premium_chat_id, invite.invite_link)
-                except TelegramBadRequest:
-                    pass
+                for cid in chat_ids:
+                    try:
+                        await bot.revoke_chat_invite_link(cid, invite.invite_link)
+                        break
+                    except TelegramBadRequest:
+                        pass
                 invite.revoked = True
             user.premium_status = "removed"
             user.channel_access_status = "removed"
@@ -467,3 +540,4 @@ def make_router(settings: Settings, sessions: async_sessionmaker[AsyncSession]) 
         await message.answer(f"Broadcast completed. Sent: {sent}, Failed: {failed}")
 
     return router
+
