@@ -9,9 +9,10 @@ from aiohttp import web
 from aiogram import Bot, Dispatcher
 from aiogram.types import BotCommand
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+from motor.motor_asyncio import AsyncIOMotorClient  # 🟢 Naya MongoDB import
 
 from config import Settings
-from db import build_database, init_db
+# from db import build_database, init_db  # 🔴 SQL waali line hata di
 from handlers import make_router
 from services import expire_due_users
 
@@ -30,7 +31,8 @@ async def run_expiry_endpoint(request: web.Request) -> web.Response:
     expected = f"Bearer {request.app['settings'].cron_secret}"
     if request.headers.get("Authorization") != expected:
         raise web.HTTPUnauthorized(text="Invalid scheduler secret")
-    removed = await expire_due_users(request.app["bot"], request.app["settings"], request.app["sessions"])
+    # 🔄 sessions ki jagah ab 'db' pass hoga
+    removed = await expire_due_users(request.app["bot"], request.app["settings"], request.app["db"])
     return web.json_response({"ok": True, "expired_removed": removed})
 
 
@@ -38,7 +40,8 @@ async def expiry_loop(app: web.Application) -> None:
     settings: Settings = app["settings"]
     while True:
         try:
-            removed = await expire_due_users(app["bot"], settings, app["sessions"])
+            # 🔄 sessions ki jagah ab 'db' pass hoga
+            removed = await expire_due_users(app["bot"], settings, app["db"])
             if removed:
                 logger.info("Removed %s expired premium member(s)", removed)
         except Exception:
@@ -49,7 +52,9 @@ async def expiry_loop(app: web.Application) -> None:
 async def on_startup(app: web.Application) -> None:
     settings: Settings = app["settings"]
     bot: Bot = app["bot"]
-    await init_db(app["engine"])
+    
+    # await init_db(app["engine"])  # 🔴 SQL database init hata diya (Mongo mein zaroorat nahi)
+    
     await bot.set_my_commands(
         [
             BotCommand(command="start", description="Show premium plans"),
@@ -73,20 +78,26 @@ async def on_cleanup(app: web.Application) -> None:
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
-    await app["engine"].dispose()
+    app["mongo_client"].close()  # 🟢 SQL dispose ki jagah MongoDB client close kiya
 
 
 def create_app() -> web.Application:
     settings = Settings.from_env()
-    engine, sessions = build_database(settings.database_url)
+    
+    # 🟢 MongoDB Connection Setup
+    mongo_client = AsyncIOMotorClient(settings.mongo_uri)
+    db = mongo_client["srk_prime_db"]  # Aapka database naam
+    
     bot = Bot(token=settings.bot_token)
     dispatcher = Dispatcher()
-    dispatcher.include_router(make_router(settings, sessions))
+    
+    # 🔄 Router ko ab sessions ki jagah 'db' pass kar rahe hain
+    dispatcher.include_router(make_router(settings, db))
 
     app = web.Application()
     app["settings"] = settings
-    app["engine"] = engine
-    app["sessions"] = sessions
+    app["mongo_client"] = mongo_client  # Cleanup ke liye save kiya
+    app["db"] = db                      # Sessions ki jagah ab Pure app mein 'db' use hoga
     app["bot"] = bot
     app["dispatcher"] = dispatcher
 
