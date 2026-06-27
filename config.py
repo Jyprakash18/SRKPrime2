@@ -59,35 +59,33 @@ class Settings:
             "6m": Plan("6m", "6 Months", 6, getenv("PLAN_6M_AMOUNT", "₹269")),
             "12m": Plan("12m", "1 Year", 12, getenv("PLAN_12M_AMOUNT", "₹499")),
         }
-        return cls(
+                  return cls(
             bot_token=bot_token,
             admin_ids=admin_ids,
             premium_chat_id=premium_chat_id,
-            database_url=getenv("DATABASE_URL", "sqlite+aiosqlite:///premium_bot.db"),
+            mongo_uri=_required("MONGO_URI"),  # 🟢 Database_url ki jagah yeh line aayegi
             webhook_base_url=webhook_base_url,
             webhook_path=getenv("WEBHOOK_PATH", "/telegram/webhook"),
             webhook_secret=_required("WEBHOOK_SECRET"),
             cron_secret=_required("CRON_SECRET"),
-            support_text=getenv("SUPPORT_TEXT", "Please contact admin for support."),
+            support_text=getenv("SUPPORT_TEXT", "Please contact admin fo..."),
             invite_valid_minutes=int(getenv("INVITE_VALID_MINUTES", "60")),
             expiry_check_seconds=int(getenv("EXPIRY_CHECK_SECONDS", "300")),
             plans=plans,
         )
+
+
+# 🔴 IS POORE HISSE KO DELETE KAREIN (Line 76-91):
 # config.py ke andar Settings class mein badlav:
 class Settings:
-    def __init__(self, bot_token, webhook_secret, cron_secret, mongo_uri, ...):
+    def __init__(self, bot_token, webhook_secret, cron_secret, m...
         self.bot_token = bot_token
         self.mongo_uri = mongo_uri  # Naya variable
         # ... baaki variables
 
     @classmethod
     def from_env(cls):
-        return cls(
-            bot_token=_required("BOT_TOKEN"),
-            webhook_secret=_required("WEBHOOK_SECRET"),
-            cron_secret=_required("CRON_SECRET"),
-            mongo_uri=_required("MONGO_URI"),  # Yeh line add karein
-            # ... baaki variables
+        ...
         )
 
 
