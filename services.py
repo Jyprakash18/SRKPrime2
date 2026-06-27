@@ -86,4 +86,59 @@ async def expire_due_users(
         "premium_status": "active",
         "premium_expires_at": {"$ne": None, "$lte": now}
     })
-    users = await cursor.to_
+    users = await cursor.to_list(length=None)
+    
+    chat_ids = settings.premium_chat_id if isinstance(settings.premium_chat_id, list) else [settings.premium_chat_id]
+    
+    for user in users:
+        user_id = user["_id"]  # 🟢 Handlers mein humne telegram_id ko hi '_id' banaya tha
+        
+        # 🔄 MongoDB Query: User ke saare active/open links dhoondo aur revoke karo
+        link_cursor = db.invite_links.find({
+            "user_id": user_id,
+            "used": False,
+            "revoked": False
+        })
+        open_links = await link_cursor.to_list(length=None)
+        
+        for invite in open_links:
+            for cid in chat_ids:
+                try:
+                    await bot.revoke_chat_invite_link(cid, invite["invite_link"])
+                    break
+                except TelegramBadRequest:
+                    pass
+            
+            # Link ko database mein revoked mark karein
+            await db.invite_links.update_one(
+                {"_id": invite["_id"]},
+                {"$set": {"revoked": True}}
+            )
+
+        # User ko saare premium chats/groups se remove (ban) karein
+        for cid in chat_ids:
+            try:
+                await bot.ban_chat_member(cid, user_id)
+            except TelegramBadRequest as exc:
+                logger.warning("Could not ban/remove expired user %s from chat %s: %s", user_id, cid, exc)
+        
+        # 🔄 MongoDB Update User Status
+        await db.users.update_one(
+            {"_id": user_id},
+            {"$set": {
+                "premium_status": "expired",
+                "channel_access_status": "removed"
+            }}
+        )
+        removed += 1
+        
+        # User ko expiry ka alert message bhejein
+        try:
+            await bot.send_message(
+                user_id,
+                "Your premium has expired. Use /renew to choose a new plan.",
+            )
+        except TelegramForbiddenError:
+            logger.info("Could not notify expired user %s; bot is blocked", user_id)
+            
+    return removed
