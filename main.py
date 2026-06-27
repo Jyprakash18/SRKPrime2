@@ -10,7 +10,6 @@ from aiogram import Bot, Dispatcher
 from aiogram.types import BotCommand
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from motor.motor_asyncio import AsyncIOMotorClient  # 🟢 Naya MongoDB import
-
 from config import Settings
 # from db import build_database, init_db  # 🔴 SQL waali line hata di
 from handlers import make_router
