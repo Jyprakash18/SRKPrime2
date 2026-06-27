@@ -58,8 +58,8 @@ class Settings:
             "3m": Plan("3m", "3 Months", 3, getenv("PLAN_3M_AMOUNT", "₹149")),
             "6m": Plan("6m", "6 Months", 6, getenv("PLAN_6M_AMOUNT", "₹269")),
             "12m": Plan("12m", "1 Year", 12, getenv("PLAN_12M_AMOUNT", "₹499")),
-        }
-                  return cls(
+            )
+            return cls(
             bot_token=bot_token,
             admin_ids=admin_ids,
             premium_chat_id=premium_chat_id,
