@@ -73,6 +73,22 @@ class Settings:
             expiry_check_seconds=int(getenv("EXPIRY_CHECK_SECONDS", "300")),
             plans=plans,
         )
+# config.py ke andar Settings class mein badlav:
+class Settings:
+    def __init__(self, bot_token, webhook_secret, cron_secret, mongo_uri, ...):
+        self.bot_token = bot_token
+        self.mongo_uri = mongo_uri  # Naya variable
+        # ... baaki variables
+
+    @classmethod
+    def from_env(cls):
+        return cls(
+            bot_token=_required("BOT_TOKEN"),
+            webhook_secret=_required("WEBHOOK_SECRET"),
+            cron_secret=_required("CRON_SECRET"),
+            mongo_uri=_required("MONGO_URI"),  # Yeh line add karein
+            # ... baaki variables
+        )
 
 
 def _required(name: str) -> str:
