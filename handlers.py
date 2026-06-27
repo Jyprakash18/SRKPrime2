@@ -3,56 +3,58 @@ from __future__ import annotations
 import logging
 from datetime import timedelta
 from zoneinfo import ZoneInfo
+from bson import ObjectId  # 🟢 MongoDB IDs handle karne ke liye naya import
 
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import CallbackQuery, ChatJoinRequest, Message, User as TgUser, InlineKeyboardMarkup, InlineKeyboardButton
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from config import Settings
 from keyboards import approval_keyboard, join_keyboard, plans_keyboard
-from models import InviteLink, PaymentRequest, User
+# 🔴 SQL waale Models hata diye kyunki Mongo mein models ki direct zaroorat nahi hoti
 from services import as_utc, create_invite_for_user, new_expiry, utcnow
 
 logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
 
 
-def make_router(settings: Settings, sessions: async_sessionmaker[AsyncSession]) -> Router:
+# 🔄 sessions ki jagah ab 'db' receive karenge
+def make_router(settings: Settings, db) -> Router:
     router = Router(name="premium_bot")
 
-    async def upsert_user(session: AsyncSession, telegram_user: TgUser) -> User:
-        user = await session.get(User, telegram_user.id)
-        if user is None:
-            user = User(
-                telegram_id=telegram_user.id,
-                username=telegram_user.username,
-                full_name=telegram_user.full_name,
-            )
-            session.add(user)
-        else:
-            user.username = telegram_user.username
-            user.full_name = telegram_user.full_name
+    # 🟢 MongoDB Upsert Method
+    async def upsert_user(telegram_user: TgUser) -> dict:
+        user = await db.users.find_one_and_update(
+            {"_id": telegram_user.id},  # Telegram ID ko primary key (_id) banaya
+            {"$set": {
+                "username": telegram_user.username,
+                "full_name": telegram_user.full_name,
+            }},
+            upsert=True,
+            return_document=True
+        )
         return user
 
     def is_admin(user_id: int) -> bool:
         return user_id in settings.admin_ids
 
     def expiry_text(value) -> str:
+        if not value:
+            return "—"
         value = as_utc(value)
-        return value.astimezone(IST).strftime("%d %b %Y, %I:%M %p IST") if value else "—"
+        return value.astimezone(IST).strftime("%d %b %Y, %I:%M %p IST")
 
     @router.message(CommandStart())
     async def start(message: Message) -> None:
         if not message.from_user:
             return
-        async with sessions() as session:
-            await upsert_user(session, message.from_user)
-            await session.commit()
+        
+        # 🔄 SQL sessions ki jagah MongoDB Upsert
+        await upsert_user(message.from_user)
+        
         await message.answer(
-           text="Welcome! Choose your premium plan, complete the payment, and upload your payment screenshot. After admin approval, you will get access to the premium and group:",
+            text="Welcome! Choose your premium plan, complete the payment, and upload your payment screenshot. After admin approval, you will get access to the premium and group:",
             reply_markup=plans_keyboard(settings.plans),
         )
 
@@ -65,15 +67,23 @@ def make_router(settings: Settings, sessions: async_sessionmaker[AsyncSession]) 
         if plan is None:
             await callback.answer("Invalid plan.", show_alert=True)
             return
-        async with sessions() as session:
-            user = await upsert_user(session, callback.from_user)
-            user.selected_plan = plan.code
-            user.payment_status = "awaiting_screenshot"
-            await session.commit()
+        
+        # 🔄 MongoDB Update
+        await db.users.update_one(
+            {"_id": callback.from_user.id},
+            {"$set": {
+                "username": callback.from_user.username,
+                "full_name": callback.from_user.full_name,
+                "selected_plan": plan.code,
+                "payment_status": "awaiting_screenshot"
+            }},
+            upsert=True
+        )
+        
         text = (
             f"Plan: {plan.name}\n"
             f"Amount: {plan.amount}\n\n"
-            "Thank You! Once your payment is completed, kindly upload the payment screenshot here for verification."
+            "Thank You! Once your payment is completed, kindly upload the payment screenshot here for verification.\n"
             "It will be sent to the admin for verification Up to 12hour"
         )
         if callback.message:
@@ -88,18 +98,21 @@ def make_router(settings: Settings, sessions: async_sessionmaker[AsyncSession]) 
     async def my_plan(message: Message) -> None:
         if not message.from_user:
             return
-        async with sessions() as session:
-            user = await session.get(User, message.from_user.id)
-        if user is None or user.premium_status != "active":
+        
+        # 🔄 MongoDB Find One
+        user = await db.users.find_one({"_id": message.from_user.id})
+        
+        if user is None or user.get("premium_status") != "active":
             await message.answer("Aapka koi active premium plan nahi hai. /start se plan choose karein.")
             return
-        plan = settings.plans.get(user.active_plan or "")
-        name = plan.name if plan else (user.active_plan or "Premium")
+            
+        plan = settings.plans.get(user.get("active_plan") or "")
+        name = plan.name if plan else (user.get("active_plan") or "Premium")
         await message.answer(
             f"Current plan: {name}\n"
             f"Status: Active\n"
-            f"Expiry: {expiry_text(user.premium_expires_at)}\n"
-            f"Access: {user.channel_access_status}"
+            f"Expiry: {expiry_text(user.get('premium_expires_at'))}\n"
+            f"Access: {user.get('channel_access_status')}"
         )
 
     @router.message(Command("help"))
@@ -110,43 +123,46 @@ def make_router(settings: Settings, sessions: async_sessionmaker[AsyncSession]) 
     async def receive_screenshot(message: Message, bot: Bot) -> None:
         if not message.from_user:
             return
-        async with sessions() as session:
-            user = await upsert_user(session, message.from_user)
-            if not user.selected_plan or user.selected_plan not in settings.plans:
-                await session.commit()
-                await message.answer("Pehle /start se premium plan choose karein, phir screenshot bhejein.")
-                return
-            existing = await session.scalar(
-                select(PaymentRequest).where(
-                    PaymentRequest.user_id == user.telegram_id,
-                    PaymentRequest.status == "pending",
-                )
-            )
-            if existing:
-                await message.answer("Aapka screenshot already approval ke liye pending hai.")
-                return
-            plan = settings.plans[user.selected_plan]
-            if message.photo:
-                file_id = message.photo[-1].file_id
-                kind = "photo"
-            elif message.document:
-                file_id = message.document.file_id
-                kind = "document"
-            else:
-                return
-            request = PaymentRequest(
-                user_id=user.telegram_id,
-                plan_code=plan.code,
-                plan_name=plan.name,
-                amount=plan.amount,
-                screenshot_file_id=file_id,
-                screenshot_kind=kind,
-            )
-            session.add(request)
-            user.payment_status = "pending"
-            await session.flush()
-            request_id = request.id
-            await session.commit()
+            
+        user = await upsert_user(message.from_user)
+        if not user.get("selected_plan") or user.get("selected_plan") not in settings.plans:
+            await message.answer("Pehle /start se premium plan choose karein, phir screenshot bhejein.")
+            return
+            
+        # 🔄 Existing Request Check via MongoDB
+        existing = await db.payment_requests.find_one({
+            "user_id": user["_id"],
+            "status": "pending"
+        })
+        if existing:
+            await message.answer("Aapka screenshot already approval ke liye pending hai.")
+            return
+            
+        plan = settings.plans[user["selected_plan"]]
+        if message.photo:
+            file_id = message.photo[-1].file_id
+            kind = "photo"
+        elif message.document:
+            file_id = message.document.file_id
+            kind = "document"
+        else:
+            return
+            
+        # 🔄 MongoDB Insert Request
+        request_data = {
+            "user_id": user["_id"],
+            "plan_code": plan.code,
+            "plan_name": plan.name,
+            "amount": plan.amount,
+            "screenshot_file_id": file_id,
+            "screenshot_kind": kind,
+            "status": "pending",
+            "created_at": utcnow()
+        }
+        res = await db.payment_requests.insert_one(request_data)
+        request_id = str(res.inserted_id)  # MongoDB _id ko string mein convert kiya admin panel ke liye
+        
+        await db.users.update_one({"_id": user["_id"]}, {"$set": {"payment_status": "pending"}})
 
         handle = f"@{message.from_user.username}" if message.from_user.username else "No username"
         caption = (
@@ -181,94 +197,98 @@ def make_router(settings: Settings, sessions: async_sessionmaker[AsyncSession]) 
             return
         try:
             _, action, request_text = callback.data.split(":")
-            request_id = int(request_text)
-        except (ValueError, TypeError):
-            await callback.answer("Invalid action.", show_alert=True)
+            request_id = ObjectId(request_text)  # String ID ko MongoDB ObjectId mein convert kiya
+        except Exception:
+            await callback.answer("Invalid action or Request ID.", show_alert=True)
             return
 
-        approved_user_id: int | None = None
         expires_at = None
         invite_links = []
         
-        async with sessions() as session:
-            async with session.begin():
-                payment = await session.scalar(
-                    select(PaymentRequest).where(PaymentRequest.id == request_id).with_for_update()
-                )
-                if payment is None:
-                    await callback.answer("Payment request not found.", show_alert=True)
-                    return
-                if payment.status != "pending":
-                    await callback.answer(f"Already {payment.status}.", show_alert=True)
-                    return
-                user = await session.get(User, payment.user_id)
-                if user is None:
-                    await callback.answer("User not found.", show_alert=True)
-                    return
-                if action == "reject":
-                    payment.status = "rejected"
-                    payment.admin_id = callback.from_user.id
-                    payment.processed_at = utcnow()
-                    user.payment_status = "rejected"
-                    rejected_user_id = user.telegram_id
-                elif action == "approve":
-                    plan = settings.plans.get(payment.plan_code)
-                    if not plan:
-                        await callback.answer("Plan configuration missing.", show_alert=True)
-                        return
-                    _, expires_at = new_expiry(user.premium_expires_at if user.premium_status == "active" else None, plan)
-                    
-                    chat_ids = settings.premium_chat_id if isinstance(settings.premium_chat_id, list) else [settings.premium_chat_id]
-                    for cid in chat_ids:
-                        try:
-                            expire_date = utcnow() + timedelta(minutes=settings.invite_valid_minutes)
-                            tg_invite = await bot.create_chat_invite_link(
-                                chat_id=cid,
-                                creates_join_request=True,
-                                expire_date=expire_date
-                            )
-                            db_invite = InviteLink(
-                                user_id=user.telegram_id,
-                                invite_link=tg_invite.invite_link,
-                                expires_at=expire_date,
-                                used=False,
-                                revoked=False
-                            )
-                            session.add(db_invite)
-                            invite_links.append((cid, tg_invite.invite_link))
-                        except TelegramAPIError as exc:
-                            logger.error("Unable to create access invite for chat %s: %s", cid, exc)
-                    
-                    if not invite_links:
-                        await callback.answer("Invite links generation failed. Bot admin permissions check karein.", show_alert=True)
-                        return
-
-                    payment.status = "approved"
-                    payment.admin_id = callback.from_user.id
-                    payment.processed_at = utcnow()
-                    user.payment_status = "approved"
-                    user.active_plan = payment.plan_code
-                    user.premium_status = "active"
-                    user.premium_started_at = utcnow()
-                    user.premium_expires_at = expires_at
-                    user.channel_access_status = "invite_sent"
-                    approved_user_id = user.telegram_id
-                    rejected_user_id = None
-                else:
-                    await callback.answer("Unknown action.", show_alert=True)
-                    return
+        # 🟢 [RACE CONDITION FIX]: Atomic tarike se status pending se approved/rejected karenge takki double click se crash na ho
+        payment = await db.payment_requests.find_one_and_update(
+            {"_id": request_id, "status": "pending"},
+            {"$set": {
+                "status": "approved" if action == "approve" else "rejected",
+                "admin_id": callback.from_user.id,
+                "processed_at": utcnow()
+            }},
+            return_document=True
+        )
+        
+        if payment is None:
+            # Agar request pehle hi process ho chuki hai
+            existing_pay = await db.payment_requests.find_one({"_id": request_id})
+            if existing_pay is None:
+                await callback.answer("Payment request not found.", show_alert=True)
+            else:
+                await callback.answer(f"Already {existing_pay.get('status')}.", show_alert=True)
+            return
+            
+        user = await db.users.find_one({"_id": payment["user_id"]})
+        if user is None:
+            await callback.answer("User not found.", show_alert=True)
+            return
 
         if action == "reject":
+            await db.users.update_one({"_id": payment["user_id"]}, {"$set": {"payment_status": "rejected"}})
             try:
-                await bot.send_message(rejected_user_id, "Payment rejected, please contact admin @SRKSupports.")
+                await bot.send_message(payment["user_id"], "Payment rejected, please contact admin @SRKSupports.")
             except TelegramAPIError:
                 pass
             await _mark_admin_panel(callback, "❌ Rejected")
             await callback.answer("Rejected")
             return
 
-        assert approved_user_id is not None and expires_at is not None
-        
+        elif action == "approve":
+            plan = settings.plans.get(payment["plan_code"])
+            if not plan:
+                await callback.answer("Plan configuration missing.", show_alert=True)
+                return
+                
+            user_current_expiry = user.get("premium_expires_at") if user.get("premium_status") == "active" else None
+            _, expires_at = new_expiry(user_current_expiry, plan)
+            
+            chat_ids = settings.premium_chat_id if isinstance(settings.premium_chat_id, list) else [settings.premium_chat_id]
+            for cid in chat_ids:
+                try:
+                    expire_date = utcnow() + timedelta(minutes=settings.invite_valid_minutes)
+                    tg_invite = await bot.create_chat_invite_link(
+                        chat_id=cid,
+                        creates_join_request=True,
+                        expire_date=expire_date
+                    )
+                    
+                    # 🔄 Invite Link ko MongoDB mein save karein
+                    await db.invite_links.insert_one({
+                        "user_id": user["_id"],
+                        "invite_link": tg_invite.invite_link,
+                        "expires_at": expire_date,
+                        "used": False,
+                        "revoked": False,
+                        "created_at": utcnow()
+                    })
+                    invite_links.append((cid, tg_invite.invite_link))
+                except TelegramAPIError as exc:
+                    logger.error("Unable to create access invite for chat %s: %s", cid, exc)
+            
+            if not invite_links:
+                await callback.answer("Invite links generation failed. Bot admin permissions check karein.", show_alert=True)
+                return
+
+            # 🔄 User Status MongoDB mein update karein
+            await db.users.update_one(
+                {"_id": user["_id"]},
+                {"$set": {
+                    "payment_status": "approved",
+                    "active_plan": payment["plan_code"],
+                    "premium_status": "active",
+                    "premium_started_at": utcnow(),
+                    "premium_expires_at": expires_at,
+                    "channel_access_status": "invite_sent"
+                }}
+            )
+
         buttons = []
         for cid, link in invite_links:
             try:
@@ -281,15 +301,16 @@ def make_router(settings: Settings, sessions: async_sessionmaker[AsyncSession]) 
 
         try:
             await bot.send_message(
-                approved_user_id,
+                payment["user_id"],
                 "Your premium is activated.\n"
                 f"Expiry: {expiry_text(expires_at)}\n\n"
                 f"Join links {settings.invite_valid_minutes} minutes tak valid hain. Buttons par tap karke join requests bhejein.",
                 reply_markup=custom_join_markup,
             )
         except TelegramAPIError as exc:
-            logger.warning("Premium approved but invitation could not be delivered to %s: %s", approved_user_id, exc)
+            logger.warning("Premium approved but invitation could not be delivered to %s: %s", payment["user_id"], exc)
             await bot.send_message(callback.from_user.id, "Approved, but user ko invite DM nahi bhej paya. User ne bot block kiya ho sakta hai.")
+        
         await _mark_admin_panel(callback, f"✅ Approved — expires {expiry_text(expires_at)}")
         await callback.answer("Approved")
 
@@ -313,50 +334,61 @@ def make_router(settings: Settings, sessions: async_sessionmaker[AsyncSession]) 
             return
         invite_text = request.invite_link.invite_link
         now = utcnow()
-        async with sessions() as session:
-            invite = await session.scalar(select(InviteLink).where(InviteLink.invite_link == invite_text))
-            if invite is None:
-                return
-            user = await session.get(User, invite.user_id)
-            user_expiry = as_utc(user.premium_expires_at) if user else None
-            valid = (
-                request.from_user.id == invite.user_id
-                and not invite.used
-                and not invite.revoked
-                and as_utc(invite.expires_at) > now
-                and user is not None
-                and user.premium_status == "active"
-                and user_expiry is not None
-                and user_expiry > now
+        
+        # 🔄 MongoDB Invite Check
+        invite = await db.invite_links.find_one({"invite_link": invite_text})
+        if invite is None:
+            return
+            
+        user = await db.users.find_one({"_id": invite["user_id"]})
+        user_expiry = as_utc(user.get("premium_expires_at")) if user else None
+        
+        valid = (
+            request.from_user.id == invite["user_id"]
+            and not invite.get("used")
+            and not invite.get("revoked")
+            and as_utc(invite.get("expires_at")) > now
+            and user is not None
+            and user.get("premium_status") == "active"
+            and user_expiry is not None
+            and user_expiry > now
+        )
+        
+        if valid:
+            await bot.approve_chat_join_request(request.chat.id, request.from_user.id)
+            try:
+                await bot.revoke_chat_invite_link(request.chat.id, invite["invite_link"])
+            except TelegramBadRequest:
+                pass
+                
+            # 🔄 Update Invite aur User status MongoDB mein
+            await db.invite_links.update_one(
+                {"_id": invite["_id"]},
+                {"$set": {"used": True, "revoked": True, "used_at": now}}
             )
-            if valid:
-                await bot.approve_chat_join_request(request.chat.id, request.from_user.id)
-                try:
-                    await bot.revoke_chat_invite_link(request.chat.id, invite.invite_link)
-                except TelegramBadRequest:
-                    pass
-                invite.used = True
-                invite.revoked = True
-                invite.used_at = now
-                user.channel_access_status = "joined"
-                await session.commit()
-                await bot.send_message(request.from_user.id, "Premium channel/group access approved.")
-                return
-            await bot.decline_chat_join_request(request.chat.id, request.from_user.id)
-            await session.commit()
+            await db.users.update_one(
+                {"_id": invite["user_id"]},
+                {"$set": {"channel_access_status": "joined"}}
+            )
+            await bot.send_message(request.from_user.id, "Premium channel/group access approved.")
+            return
+            
+        await bot.decline_chat_join_request(request.chat.id, request.from_user.id)
 
     @router.message(Command("users"))
     async def list_users(message: Message) -> None:
         if not message.from_user or not is_admin(message.from_user.id):
             return
-        async with sessions() as session:
-            total = await session.scalar(select(func.count()).select_from(User))
-            result = await session.execute(select(User).order_by(User.created_at.desc()).limit(20))
-            users = result.scalars().all()
+            
+        # 🔄 MongoDB count aur pagination
+        total = await db.users.count_documents({})
+        cursor = db.users.find().sort("created_at", -1).limit(20)
+        users = await cursor.to_list(length=20)
+        
         lines = [f"Total users: {total}", "Latest 20 users:"]
-        for user in users:
-            handle = f"@{user.username}" if user.username else "—"
-            lines.append(f"{user.telegram_id} | {handle} | {user.premium_status}")
+        for u in users:
+            handle = f"@{u.get('username')}" if u.get('username') else "—"
+            lines.append(f"{u['_id']} | {handle} | {u.get('premium_status', 'free')}")
         await message.answer("\n".join(lines))
 
     @router.message(Command("premium_users"))
@@ -364,30 +396,35 @@ def make_router(settings: Settings, sessions: async_sessionmaker[AsyncSession]) 
         if not message.from_user or not is_admin(message.from_user.id):
             return
         now = utcnow()
-        async with sessions() as session:
-            result = await session.execute(
-                select(User).where(User.premium_status == "active", User.premium_expires_at > now).order_by(User.premium_expires_at)
-            )
-            users = result.scalars().all()
+        
+        # 🔄 MongoDB Find query with filters
+        cursor = db.users.find({
+            "premium_status": "active",
+            "premium_expires_at": {"$gt": now}
+        }).sort("premium_expires_at", 1).limit(40)
+        users = await cursor.to_list(length=40)
+        
         if not users:
             await message.answer("No active premium users.")
             return
         lines = [f"Active premium users: {len(users)}"]
-        for user in users[:40]:
-            lines.append(f"{user.telegram_id} | {user.active_plan or 'manual'} | {expiry_text(user.premium_expires_at)}")
+        for u in users:
+            lines.append(f"{u['_id']} | {u.get('active_plan', 'manual')} | {expiry_text(u.get('premium_expires_at'))}")
         await message.answer("\n".join(lines))
 
     @router.message(Command("stats"))
     async def stats(message: Message) -> None:
         if not message.from_user or not is_admin(message.from_user.id):
             return
-        async with sessions() as session:
-            users_total = await session.scalar(select(func.count()).select_from(User))
-            active = await session.scalar(select(func.count()).select_from(User).where(User.premium_status == "active"))
-            expired = await session.scalar(select(func.count()).select_from(User).where(User.premium_status == "expired"))
-            pending = await session.scalar(select(func.count()).select_from(PaymentRequest).where(PaymentRequest.status == "pending"))
-            approved = await session.scalar(select(func.count()).select_from(PaymentRequest).where(PaymentRequest.status == "approved"))
-            rejected = await session.scalar(select(func.count()).select_from(PaymentRequest).where(PaymentRequest.status == "rejected"))
+            
+        # 🔄 MongoDB count queries
+        users_total = await db.users.count_documents({})
+        active = await db.users.count_documents({"premium_status": "active"})
+        expired = await db.users.count_documents({"premium_status": "expired"})
+        pending = await db.payment_requests.count_documents({"status": "pending"})
+        approved = await db.payment_requests.count_documents({"status": "approved"})
+        rejected = await db.payment_requests.count_documents({"status": "rejected"})
+        
         await message.answer(
             "Bot stats\n"
             f"Users: {users_total}\n"
@@ -415,42 +452,46 @@ def make_router(settings: Settings, sessions: async_sessionmaker[AsyncSession]) 
             return
             
         invite_links = []
-        async with sessions() as session:
-            user = await session.get(User, target_id)
-            if user is None:
-                user = User(telegram_id=target_id)
-                session.add(user)
-            now = utcnow()
-            current = as_utc(user.premium_expires_at)
-            base = current if user.premium_status == "active" and current and current > now else now
-            user.selected_plan = f"manual-{days}d"
-            user.active_plan = f"manual-{days}d"
-            user.payment_status = "admin_added"
-            user.premium_status = "active"
-            user.premium_started_at = now
-            user.premium_expires_at = base + timedelta(days=days)
-            user.channel_access_status = "invite_sent"
-            
-            chat_ids = settings.premium_chat_id if isinstance(settings.premium_chat_id, list) else [settings.premium_chat_id]
-            for cid in chat_ids:
-                try:
-                    expire_date = utcnow() + timedelta(minutes=settings.invite_valid_minutes)
-                    tg_invite = await bot.create_chat_invite_link(chat_id=cid, creates_join_request=True, expire_date=expire_date)
-                    db_invite = InviteLink(
-                        user_id=target_id,
-                        invite_link=tg_invite.invite_link,
-                        expires_at=expire_date,
-                        used=False,
-                        revoked=False
-                    )
-                    session.add(db_invite)
-                    invite_links.append((cid, tg_invite.invite_link))
-                except TelegramAPIError as exc:
-                    logger.error("Manual add: Unable to create invite for chat %s: %s", cid, exc)
-                    
-            expiry = user.premium_expires_at
-            await session.commit()
-            
+        user = await db.users.find_one({"_id": target_id})
+        now = utcnow()
+        current = as_utc(user.get("premium_expires_at")) if user else None
+        base = current if user and user.get("premium_status") == "active" and current and current > now else now
+        expiry = base + timedelta(days=days)
+        
+        # 🔄 MongoDB Upsert / Update User
+        await db.users.update_one(
+            {"_id": target_id},
+            {"$set": {
+                "selected_plan": f"manual-{days}d",
+                "active_plan": f"manual-{days}d",
+                "payment_status": "admin_added",
+                "premium_status": "active",
+                "premium_started_at": now,
+                "premium_expires_at": expiry,
+                "channel_access_status": "invite_sent"
+            }},
+            upsert=True
+        )
+        
+        chat_ids = settings.premium_chat_id if isinstance(settings.premium_chat_id, list) else [settings.premium_chat_id]
+        for cid in chat_ids:
+            try:
+                expire_date = utcnow() + timedelta(minutes=settings.invite_valid_minutes)
+                tg_invite = await bot.create_chat_invite_link(chat_id=cid, creates_join_request=True, expire_date=expire_date)
+                
+                # 🔄 Save invite to Mongo
+                await db.invite_links.insert_one({
+                    "user_id": target_id,
+                    "invite_link": tg_invite.invite_link,
+                    "expires_at": expire_date,
+                    "used": False,
+                    "revoked": False,
+                    "created_at": utcnow()
+                })
+                invite_links.append((cid, tg_invite.invite_link))
+            except TelegramAPIError as exc:
+                logger.error("Manual add: Unable to create invite for chat %s: %s", cid, exc)
+                
         buttons = []
         for cid, link in invite_links:
             try:
@@ -482,32 +523,42 @@ def make_router(settings: Settings, sessions: async_sessionmaker[AsyncSession]) 
         except ValueError:
             await message.answer("Usage: /removepremium user_id")
             return
-        async with sessions() as session:
-            user = await session.get(User, target_id)
-            if user is None:
-                await message.answer("User not found.")
-                return
+            
+        user = await db.users.find_one({"_id": target_id})
+        if user is None:
+            await message.answer("User not found.")
+            return
+            
+        chat_ids = settings.premium_chat_id if isinstance(settings.premium_chat_id, list) else [settings.premium_chat_id]
+        for cid in chat_ids:
+            try:
+                await bot.ban_chat_member(cid, target_id)
+            except TelegramAPIError as exc:
+                logger.warning("Unable to remove %s from chat %s: %s", target_id, cid, exc)
                 
-            chat_ids = settings.premium_chat_id if isinstance(settings.premium_chat_id, list) else [settings.premium_chat_id]
+        # 🔄 Active Invite Links fetch and revoke in MongoDB
+        cursor = db.invite_links.find({"user_id": target_id, "revoked": False})
+        links = await cursor.to_list(length=None)
+        
+        for invite in links:
             for cid in chat_ids:
                 try:
-                    await bot.ban_chat_member(cid, target_id)
-                except TelegramAPIError as exc:
-                    logger.warning("Unable to remove %s from chat %s: %s", target_id, cid, exc)
-                    
-            links = (await session.execute(select(InviteLink).where(InviteLink.user_id == target_id, InviteLink.revoked.is_(False)))).scalars().all()
-            for invite in links:
-                for cid in chat_ids:
-                    try:
-                        await bot.revoke_chat_invite_link(cid, invite.invite_link)
-                        break
-                    except TelegramBadRequest:
-                        pass
-                invite.revoked = True
-            user.premium_status = "removed"
-            user.channel_access_status = "removed"
-            user.premium_expires_at = utcnow()
-            await session.commit()
+                    await bot.revoke_chat_invite_link(cid, invite["invite_link"])
+                    break
+                except TelegramBadRequest:
+                    pass
+            await db.invite_links.update_one({"_id": invite["_id"]}, {"$set": {"revoked": True}})
+            
+        # 🔄 Update user in MongoDB
+        await db.users.update_one(
+            {"_id": target_id},
+            {"$set": {
+                "premium_status": "removed",
+                "channel_access_status": "removed",
+                "premium_expires_at": utcnow()
+            }}
+        )
+        
         try:
             await bot.send_message(target_id, "Your premium access has been removed. Please contact admin @SRKSupports.")
         except TelegramAPIError:
@@ -522,8 +573,12 @@ def make_router(settings: Settings, sessions: async_sessionmaker[AsyncSession]) 
         if not text:
             await message.answer("Usage: /broadcast message")
             return
-        async with sessions() as session:
-            user_ids = list((await session.execute(select(User.telegram_id))).scalars().all())
+            
+        # 🔄 MongoDB Users Find All ID
+        cursor = db.users.find({}, {"_id": 1})
+        users = await cursor.to_list(length=None)
+        user_ids = [u["_id"] for u in users]
+        
         sent = 0
         failed = 0
         for user_id in user_ids:
