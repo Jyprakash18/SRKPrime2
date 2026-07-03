@@ -21,8 +21,8 @@ class Plan:
 class Settings:
     bot_token: str
     admin_ids: frozenset[int]
-    premium_chat_id: int | str
-    database_url: str
+    premium_chat_id: list[int | str]  # Fixed: Accepts a list of IDs/Usernames
+    mongo_uri: str                    # Fixed: Changed from database_url to mongo_uri
     webhook_base_url: str
     webhook_path: str
     webhook_secret: str
@@ -59,11 +59,13 @@ class Settings:
             "6m": Plan("6m", "6 Months", 6, getenv("PLAN_6M_AMOUNT", "₹269")),
             "12m": Plan("12m", "1 Year", 12, getenv("PLAN_12M_AMOUNT", "₹499")),
         }
-    return cls(
+        
+        # Fixed: Indentation corrected
+        return cls(
             bot_token=bot_token,
             admin_ids=admin_ids,
             premium_chat_id=premium_chat_id,
-            mongo_uri=_required("MONGO_URI"),  # 🟢 Database_url ki jagah yeh line aayegi
+            mongo_uri=_required("MONGO_URI"), 
             webhook_base_url=webhook_base_url,
             webhook_path=getenv("WEBHOOK_PATH", "/telegram/webhook"),
             webhook_secret=_required("WEBHOOK_SECRET"),
@@ -72,20 +74,6 @@ class Settings:
             invite_valid_minutes=int(getenv("INVITE_VALID_MINUTES", "60")),
             expiry_check_seconds=int(getenv("EXPIRY_CHECK_SECONDS", "300")),
             plans=plans,
-        )
-
-
-# 🔴 IS POORE HISSE KO DELETE KAREIN (Line 76-91):
-# config.py ke andar Settings class mein badlav:
-class Settings:
-    def __init__(self, bot_token, webhook_secret, cron_secret, m...
-        self.bot_token = bot_token
-        self.mongo_uri = mongo_uri  # Naya variable
-        # ... baaki variables
-
-    @classmethod
-    def from_env(cls):
-        ...
         )
 
 
