@@ -4,6 +4,7 @@ import logging
 from datetime import timedelta
 from zoneinfo import ZoneInfo
 from bson import ObjectId  # 🟢 MongoDB IDs handle karne ke liye naya import
+from pymongo import ReturnDocument  # 🟢 Yeh naya import add karna hai
 
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramForbiddenError
@@ -26,13 +27,13 @@ def make_router(settings: Settings, db) -> Router:
     # 🟢 MongoDB Upsert Method
     async def upsert_user(telegram_user: TgUser) -> dict:
         user = await db.users.find_one_and_update(
-            {"_id": telegram_user.id},  # Telegram ID ko primary key (_id) banaya
+            {"_id": telegram_user.id},  
             {"$set": {
                 "username": telegram_user.username,
                 "full_name": telegram_user.full_name,
             }},
             upsert=True,
-            return_document=True
+            return_document=ReturnDocument.AFTER  # 🟢 True ki jagah yeh aayega
         )
         return user
 
@@ -204,8 +205,7 @@ def make_router(settings: Settings, db) -> Router:
 
         expires_at = None
         invite_links = []
-        
-        # 🟢 [RACE CONDITION FIX]: Atomic tarike se status pending se approved/rejected karenge takki double click se crash na ho
+                # 🟢 [RACE CONDITION FIX]
         payment = await db.payment_requests.find_one_and_update(
             {"_id": request_id, "status": "pending"},
             {"$set": {
@@ -213,7 +213,7 @@ def make_router(settings: Settings, db) -> Router:
                 "admin_id": callback.from_user.id,
                 "processed_at": utcnow()
             }},
-            return_document=True
+            return_document=ReturnDocument.AFTER  # 🟢 Yahan bhi True ki jagah yeh aayega
         )
         
         if payment is None:
