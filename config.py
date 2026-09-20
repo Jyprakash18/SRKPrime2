@@ -71,7 +71,7 @@ class Settings:
             webhook_secret=_required("WEBHOOK_SECRET"),
             cron_secret=_required("CRON_SECRET"),
             support_text=getenv("SUPPORT_TEXT", "Please contact admin fo..."),
-            invite_valid_minutes=int(getenv("INVITE_VALID_MINUTES", "60")),
+            invite_valid_minutes=int(getenv("INVITE_VALID_MINUTES", "720")),
             expiry_check_seconds=int(getenv("EXPIRY_CHECK_SECONDS", "300")),
             plans=plans,
         )
